@@ -3,25 +3,27 @@
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MARKER_FILE="$REPO_DIR/.installed"
 
+# FIRST-TIME SETUP (Runs only once)
 if [ ! -f "$MARKER_FILE" ]; then
     echo "=========================================="
     echo " NAI First-Time Setup: Installing Tools..."
     echo "=========================================="
     
-    pkg update -y && pkg install -y python wget clang cmake git dos2unix
+    # 1. Update pkg repos and install minimal system tools
+    pkg update -y && pkg install -y python wget clang cmake git
 
-    # Automatically fix line endings for the user
-    dos2unix "$REPO_DIR/nai" "$REPO_DIR/main.py" 2>/dev/null
-    
+    # 2. Link 'nai' executable to Termux system bin so it runs anywhere
     if [ -d "$PREFIX/bin" ]; then
         ln -sf "$REPO_DIR/nai" "$PREFIX/bin/nai"
         chmod +x "$REPO_DIR/nai"
-        chmod +x "$PREFIX/bin/nai"
     fi
 
+    # 3. Create marker file
     touch "$MARKER_FILE"
     echo "Setup complete! Link created: type 'nai' anywhere in Termux."
+    echo "------------------------------------------"
     sleep 1
 fi
 
+# LAUNCH PYTHON ENGINE
 python3 "$REPO_DIR/main.py"
