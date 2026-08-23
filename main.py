@@ -43,16 +43,13 @@ def save_config(config):
         pass
 
 def ensure_llama_cpp():
-    if shutil.which("llama-cli"):
-        return "llama-cli"
-    
-    local_bin = os.path.expanduser("~/bin/llama-cli")
-    if os.path.exists(local_bin):
-        return local_bin
+    cli_path = shutil.which("llama-cli") or os.path.expanduser("~/bin/llama-cli")
+    server_path = shutil.which("llama-server") or os.path.expanduser("~/bin/llama-server")
 
-    print("\n[NAI] 'llama-cli' binary not found.")
-    print("[NAI] Compiling llama.cpp locally for Termux (one-time process)...")
-    
+    if os.path.exists(cli_path) and os.path.exists(server_path):
+        return cli_path, server_path
+
+    print("\n[NAI] Compiling llama.cpp binaries locally (one-time process)...")
     os.makedirs(os.path.expanduser("~/bin"), exist_ok=True)
     subprocess.run("pkg install -y cmake clang git build-essential", shell=True, check=True)
     
@@ -63,10 +60,10 @@ def ensure_llama_cpp():
     subprocess.run(f"git clone https://github.com/ggerganov/llama.cpp.git {tmp_dir}", shell=True, check=True)
     subprocess.run(f"cd {tmp_dir} && cmake -B build && cmake --build build --config Release -j$(nproc)", shell=True, check=True)
     
-    shutil.move(os.path.join(tmp_dir, "build/bin/llama-cli"), local_bin)
+    shutil.move(os.path.join(tmp_dir, "build/bin/llama-cli"), os.path.expanduser("~/bin/llama-cli"))
+    shutil.move(os.path.join(tmp_dir, "build/bin/llama-server"), os.path.expanduser("~/bin/llama-server"))
     shutil.rmtree(tmp_dir)
-    print("[NAI] Build complete! llama-cli saved to ~/bin/")
-    return local_bin
+    return os.path.expanduser("~/bin/llama-cli"), os.path.expanduser("~/bin/llama-server")
 
 def scan_models():
     search_paths = [os.path.expanduser("~/"), "/sdcard/Download/", "/sdcard/Documents/"]
@@ -80,15 +77,11 @@ def scan_models():
     seen_real_paths = set()
 
     for m in found:
-        # Filter out vocab files
         if "ggml-vocab" in os.path.basename(m).lower():
             continue
-        
-        # Filter out files smaller than 50MB
         if os.path.getsize(m) < (50 * 1024 * 1024):
             continue
 
-        # Resolve duplicate symlinks
         real_p = os.path.realpath(m)
         if real_p not in seen_real_paths:
             seen_real_paths.add(real_p)
@@ -100,13 +93,6 @@ def handle_url_download():
     url = input("\nPaste Model Download URL: ").strip()
     if not url:
         return None
-
-    free_gb = get_free_storage_gb("~/")
-    if free_gb < 1.0:
-        print("\n[WARNING] Less than 1GB free storage available! Download might fail.")
-        confirm = input("Continue anyway? (y/N): ").lower()
-        if confirm != 'y':
-            return None
 
     dest_dir = os.path.expanduser("~/models")
     os.makedirs(dest_dir, exist_ok=True)
@@ -149,12 +135,10 @@ def main():
             print("Invalid selection.")
             sys.exit(1)
 
-    model_size_mb = os.path.getsize(selected_model) / (1024 * 1024)
-    if model_size_mb > (avail_ram_mb * 1.2):
-        print(f"\n[RAM WARNING] Model size ({model_size_mb:.0f} MB) exceeds available RAM ({avail_ram_mb} MB)!")
-        proceed = input("Do you still want to attempt launch? (y/N): ").lower()
-        if proceed != 'y':
-            sys.exit(0)
+    print("\nSelect Run Mode:")
+    print(" [1] Terminal Chat Mode (llama-cli)")
+    print(" [2] Local Web Server Mode (http://127.0.0.1:8080)")
+    mode = input("Mode Choice (Default 1): ").strip() or "1"
 
     last_threads = config.get("threads", str(os.cpu_count()))
     last_ctx = config.get("ctx", "2048")
@@ -170,17 +154,30 @@ def main():
     ext = os.path.splitext(selected_model)[1].lower()
 
     if ext == ".gguf":
-        binary = ensure_llama_cpp()
-        args = [
-            binary,
-            "-m", selected_model,
-            "-t", threads,
-            "-c", ctx,
-            "--color", "auto",
-            "-cnv"
-        ]
-        print("\n[NAI] Handing off control to llama-cli...")
-        os.execvp(binary, args)
+        cli_bin, server_bin = ensure_llama_cpp()
+
+        if mode == "2":
+            args = [
+                server_bin,
+                "-m", selected_model,
+                "-c", ctx,
+                "-t", threads,
+                "--host", "127.0.0.1",
+                "--port", "8080"
+            ]
+            print("\n[NAI] Starting Web Server at http://127.0.0.1:8080 ...")
+            os.execvp(server_bin, args)
+        else:
+            args = [
+                cli_bin,
+                "-m", selected_model,
+                "-t", threads,
+                "-c", ctx,
+                "--color", "auto",
+                "-cnv"
+            ]
+            print("\n[NAI] Starting Terminal Chat Mode...")
+            os.execvp(cli_bin, args)
 
 if __name__ == "__main__":
     main()
