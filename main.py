@@ -8,12 +8,7 @@ import subprocess
 CONFIG_FILE = os.path.expanduser("~/.nai_config.json")
 SUPPORTED_EXTENSIONS = [".gguf", ".onnx", ".safetensors"]
 
-# ---------------------------------------------------------
-# HARDWARE & SAFETY PRE-CHECKS
-# ---------------------------------------------------------
-
 def get_free_ram_mb():
-    """Reads available RAM in MB directly from Linux kernel."""
     try:
         with open("/proc/meminfo", "r") as f:
             lines = f.readlines()
@@ -25,10 +20,9 @@ def get_free_ram_mb():
         avail_kb = mem.get("MemAvailable", mem.get("MemFree", 0))
         return avail_kb // 1024
     except Exception:
-        return 2048  # Default conservative estimate
+        return 2048
 
 def get_free_storage_gb(path="~"):
-    """Returns free disk space in GB."""
     total, used, free = shutil.disk_usage(os.path.expanduser(path))
     return free / (1024 ** 3)
 
@@ -48,12 +42,7 @@ def save_config(config):
     except Exception:
         pass
 
-# ---------------------------------------------------------
-# AUTO-INSTALLERS FOR MODEL BACKENDS
-# ---------------------------------------------------------
-
 def ensure_llama_cpp():
-    """Checks for llama-cli. Builds it natively in Termux if missing."""
     if shutil.which("llama-cli"):
         return "llama-cli"
     
@@ -79,18 +68,6 @@ def ensure_llama_cpp():
     print("[NAI] Build complete! llama-cli saved to ~/bin/")
     return local_bin
 
-def ensure_onnx():
-    """Auto-installs onnxruntime if missing."""
-    try:
-        import onnxruntime
-    except ImportError:
-        print("\n[NAI] Installing ONNX Runtime package via pip...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "onnxruntime", "numpy"], check=True)
-
-# ---------------------------------------------------------
-# DISCOVERY & DOWNLOAD HANDLER
-# ---------------------------------------------------------
-
 def scan_models():
     search_paths = [os.path.expanduser("~/"), "/sdcard/Download/", "/sdcard/Documents/"]
     found = []
@@ -98,7 +75,26 @@ def scan_models():
         if os.path.exists(path):
             for ext in SUPPORTED_EXTENSIONS:
                 found.extend(glob.glob(os.path.join(path, f"**/*{ext}"), recursive=True))
-    return list(set(found))
+    
+    clean_models = []
+    seen_real_paths = set()
+
+    for m in found:
+        # Filter out vocab files
+        if "ggml-vocab" in os.path.basename(m).lower():
+            continue
+        
+        # Filter out files smaller than 50MB
+        if os.path.getsize(m) < (50 * 1024 * 1024):
+            continue
+
+        # Resolve duplicate symlinks
+        real_p = os.path.realpath(m)
+        if real_p not in seen_real_paths:
+            seen_real_paths.add(real_p)
+            clean_models.append(m)
+
+    return clean_models
 
 def handle_url_download():
     url = input("\nPaste Model Download URL: ").strip()
@@ -106,7 +102,6 @@ def handle_url_download():
         return None
 
     free_gb = get_free_storage_gb("~/")
-    print(f"[NAI Storage Check] Free Storage: {free_gb:.2f} GB")
     if free_gb < 1.0:
         print("\n[WARNING] Less than 1GB free storage available! Download might fail.")
         confirm = input("Continue anyway? (y/N): ").lower()
@@ -121,10 +116,6 @@ def handle_url_download():
     print(f"[NAI] Downloading model to {output_path}...")
     subprocess.run(["wget", "-O", output_path, url], check=True)
     return output_path
-
-# ---------------------------------------------------------
-# MAIN LAUNCHER LOGIC
-# ---------------------------------------------------------
 
 def main():
     print("==========================================")
@@ -143,8 +134,7 @@ def main():
     print(" [0] Download new model via URL")
     for i, m in enumerate(models):
         size_mb = os.path.getsize(m) / (1024 * 1024)
-        ext = os.path.splitext(m)[1].upper()
-        print(f" [{i + 1}] {os.path.basename(m)} | {ext} | {size_mb:.0f} MB")
+        print(f" [{i + 1}] {os.path.basename(m)} | {size_mb:.0f} MB")
 
     choice = input("\nSelect an option: ").strip()
 
@@ -159,29 +149,24 @@ def main():
             print("Invalid selection.")
             sys.exit(1)
 
-    # RAM PRE-CHECK FOR SELECTED MODEL
     model_size_mb = os.path.getsize(selected_model) / (1024 * 1024)
     if model_size_mb > (avail_ram_mb * 1.2):
         print(f"\n[RAM WARNING] Model size ({model_size_mb:.0f} MB) exceeds available RAM ({avail_ram_mb} MB)!")
-        print("Running this model may cause Android to terminate Termux due to out-of-memory errors.")
         proceed = input("Do you still want to attempt launch? (y/N): ").lower()
         if proceed != 'y':
             sys.exit(0)
 
-    # PARAMETERS (Prefills previous user choice if available)
     last_threads = config.get("threads", str(os.cpu_count()))
     last_ctx = config.get("ctx", "2048")
 
     threads = input(f"CPU Threads (Default {last_threads}): ").strip() or last_threads
     ctx = input(f"Context Window (Default {last_ctx}): ").strip() or last_ctx
 
-    # Save preferences to config.json
     config["threads"] = threads
     config["ctx"] = ctx
     config["last_model"] = selected_model
     save_config(config)
 
-    # MODEL ROUTER
     ext = os.path.splitext(selected_model)[1].lower()
 
     if ext == ".gguf":
@@ -191,21 +176,11 @@ def main():
             "-m", selected_model,
             "-t", threads,
             "-c", ctx,
-            "--color"
+            "--color", "auto",
+            "-cnv"
         ]
-        print("\n[NAI] Handing off control to llama-cli (Releasing Python RAM)...")
-        # os.execvp completely replaces Python in memory -> 0 MB Python RAM leftover
+        print("\n[NAI] Handing off control to llama-cli...")
         os.execvp(binary, args)
-
-    elif ext == ".onnx":
-        ensure_onnx()
-        print("\n[NAI] Launching ONNX model runner...")
-        import onnxruntime as ort
-        session = ort.InferenceSession(selected_model)
-        print(f"[NAI] ONNX model successfully loaded: {os.path.basename(selected_model)}")
-
-    elif ext == ".safetensors":
-        print("\n[NAI] Safetensors format detected. Ensure compatible PyTorch pipeline is installed.")
 
 if __name__ == "__main__":
     main()
